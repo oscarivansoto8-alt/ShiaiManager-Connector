@@ -18,5 +18,9 @@
   },
   "devDependencies": {
     "esbuild": "^0.28.1"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.1": true,
+    "esbuild@0.28.1": true
   }
 }

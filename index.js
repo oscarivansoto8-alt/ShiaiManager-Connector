@@ -15,6 +15,16 @@ const TIEMPO_SINCRONIZACION_MS = 400;
 const REGISTROS_POR_MENSAJE_516 = 11;
 const VALORES_POR_REGISTRO_516 = 9;
 
+const JUDOSHIAI_PROTOCOL_VERSION =
+  Number(process.env.JUDOSHIAI_PROTOCOL_VERSION || 7);
+
+const JUDOSHIAI_HTTP_URL =
+  process.env.JUDOSHIAI_HTTP_URL ||
+  "http://127.0.0.1:8088/json";
+
+const MODO_PRUEBA_SEGURO =
+  process.env.MODO_PRUEBA_SEGURO === "1";
+
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error("❌ Faltan las variables de Supabase en el archivo .env");
   console.error("");
@@ -134,10 +144,20 @@ function solicitarInformacionCompleta() {
     return;
   }
 
-  enviarMensaje([5, 11, 0, 7300]);
-  enviarMensaje([5, 23, 0, 7300]);
+  enviarMensaje([
+    JUDOSHIAI_PROTOCOL_VERSION,
+    11,
+    0,
+    7300,
+  ]);
+  enviarMensaje([
+    JUDOSHIAI_PROTOCOL_VERSION,
+    23,
+    0,
+    7300,
+  ]);
 
-  console.log("📤 Solicitudes 5-11 y 5-23 enviadas");
+  console.log("📤 Solicitudes de programacion y ajustes enviadas");
 }
 
 function enviarMensaje(msg) {
@@ -188,7 +208,10 @@ async function procesarMensaje(data) {
 
   const datos = mensaje.msg;
 
-  if (Number(datos[0]) !== 5) {
+  if (
+    Number(datos[0]) !==
+    JUDOSHIAI_PROTOCOL_VERSION
+  ) {
     return;
   }
 
@@ -302,7 +325,15 @@ function solicitarDefinicion(id) {
     return;
   }
 
-  if (enviarMensaje([5, 10, 0, 7300, id])) {
+  if (
+    enviarMensaje([
+      JUDOSHIAI_PROTOCOL_VERSION,
+      10,
+      0,
+      7300,
+      id,
+    ])
+  ) {
     definicionesSolicitadas.add(id);
   }
 }
@@ -396,6 +427,104 @@ function convertirProgramacion516(datos) {
   };
 }
 
+async function obtenerProgramacionTatami(
+  tatami,
+  datosWebSocket
+) {
+  try {
+    const respuesta = await fetch(
+      JUDOSHIAI_HTTP_URL,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          op: "matches_all",
+          pw: "",
+          tatami,
+        }),
+      }
+    );
+
+    if (!respuesta.ok) {
+      throw new Error(
+        "HTTP " + respuesta.status
+      );
+    }
+
+    const lista = await respuesta.json();
+
+    if (!Array.isArray(lista)) {
+      throw new Error(
+        "matches_all no devolvio un array"
+      );
+    }
+
+    const actualizadoEn =
+      new Date().toISOString();
+
+    return {
+      combates: lista.map(
+        (combate, indice) => {
+          const azul =
+            combate?.comp1 || {};
+
+          const blanco =
+            combate?.comp2 || {};
+
+          return {
+            tatami,
+            posicion: indice + 1,
+            categoria: String(
+              combate?.category || ""
+            ).trim(),
+
+            apellido_blanco: String(
+              blanco.last || ""
+            ).trim(),
+            nombre_blanco: String(
+              blanco.first || ""
+            ).trim(),
+            club_blanco: String(
+              blanco.club || ""
+            ).trim(),
+
+            apellido_azul: String(
+              azul.last || ""
+            ).trim(),
+            nombre_azul: String(
+              azul.first || ""
+            ).trim(),
+            club_azul: String(
+              azul.club || ""
+            ).trim(),
+
+            actualizado_en:
+              actualizadoEn,
+
+            _numeroCombate: Number(
+              combate?.number || 0
+            ),
+            _estado: 0,
+          };
+        }
+      ),
+      faltanDatos: false,
+    };
+  } catch (error) {
+    console.log(
+      "matches_all no disponible en Tatami " +
+        tatami +
+        "; usando WebSocket normal."
+    );
+
+    return convertirProgramacion516(
+      datosWebSocket
+    );
+  }
+}
+
 function programarSincronizacion() {
   if (temporizadorSincronizacion) {
     clearTimeout(temporizadorSincronizacion);
@@ -455,7 +584,10 @@ async function ejecutarSincronizacion() {
     }
 
     const resultado =
-      convertirProgramacion516(datos);
+      await obtenerProgramacionTatami(
+        tatami,
+        datos
+      );
 
     if (resultado.faltanDatos) {
       tatamisEsperandoDatos += 1;
@@ -550,6 +682,17 @@ async function guardarCombatesEnSupabase(
   tatami,
   combates
 ) {
+  if (MODO_PRUEBA_SEGURO) {
+    console.log(
+      "[PRUEBA SEGURA] Tatami " +
+        tatami +
+        ": se habrian guardado " +
+        combates.length +
+        " combates."
+    );
+    return;
+  }
+
   if (combates.length === 0) {
     const { error } = await supabase
       .from("combates_en_vivo")
@@ -597,6 +740,13 @@ async function guardarCombatesEnSupabase(
 }
 
 async function limpiarTodosLosCombates() {
+  if (MODO_PRUEBA_SEGURO) {
+    console.log(
+      "[PRUEBA SEGURA] NO se modifico Supabase."
+    );
+    return;
+  }
+
   if (limpiandoBaseDeDatos) {
     return;
   }

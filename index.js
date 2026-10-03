@@ -15,8 +15,11 @@ const TIEMPO_SINCRONIZACION_MS = 400;
 const REGISTROS_POR_MENSAJE_516 = 11;
 const VALORES_POR_REGISTRO_516 = 9;
 
-const JUDOSHIAI_PROTOCOL_VERSION =
-  Number(process.env.JUDOSHIAI_PROTOCOL_VERSION || 7);
+const JUDOSHIAI_PROTOCOL_VERSION_CONFIGURADA =
+  Number(process.env.JUDOSHIAI_PROTOCOL_VERSION || 0);
+
+const JUDOSHIAI_PROTOCOL_VERSIONES_SOPORTADAS =
+  [7, 5];
 
 const JUDOSHIAI_HTTP_URL =
   process.env.JUDOSHIAI_HTTP_URL ||
@@ -53,6 +56,8 @@ const programacionPorTatami = new Map();
 const definicionesSolicitadas = new Set();
 
 let ws = null;
+let judoshiaiProtocolVersion =
+  JUDOSHIAI_PROTOCOL_VERSION_CONFIGURADA || null;
 let cerrandoPrograma = false;
 let reconexionProgramada = false;
 let primeraProgramacionRecibida = false;
@@ -85,6 +90,10 @@ function conectarConJudoShiai() {
   }
 
   reconexionProgramada = false;
+
+  if (!JUDOSHIAI_PROTOCOL_VERSION_CONFIGURADA) {
+    judoshiaiProtocolVersion = null;
+  }
 
   ws = new WebSocket(JUDOSHIAI_URL, "js", {
     headers: {
@@ -144,20 +153,36 @@ function solicitarInformacionCompleta() {
     return;
   }
 
-  enviarMensaje([
-    JUDOSHIAI_PROTOCOL_VERSION,
-    11,
-    0,
-    7300,
-  ]);
-  enviarMensaje([
-    JUDOSHIAI_PROTOCOL_VERSION,
-    23,
-    0,
-    7300,
-  ]);
+  const versiones =
+    judoshiaiProtocolVersion
+      ? [judoshiaiProtocolVersion]
+      : JUDOSHIAI_PROTOCOL_VERSIONES_SOPORTADAS;
 
-  console.log("📤 Solicitudes de programacion y ajustes enviadas");
+  for (const version of versiones) {
+    enviarMensaje([
+      version,
+      11,
+      0,
+      7300,
+    ]);
+
+    enviarMensaje([
+      version,
+      23,
+      0,
+      7300,
+    ]);
+  }
+
+  if (judoshiaiProtocolVersion) {
+    console.log(
+      `📤 Solicitudes enviadas con protocolo ${judoshiaiProtocolVersion}`
+    );
+  } else {
+    console.log(
+      "📤 Detectando protocolo JudoShiai (7/5)..."
+    );
+  }
 }
 
 function enviarMensaje(msg) {
@@ -208,10 +233,32 @@ async function procesarMensaje(data) {
 
   const datos = mensaje.msg;
 
+  const versionRecibida = Number(datos[0]);
+
   if (
-    Number(datos[0]) !==
-    JUDOSHIAI_PROTOCOL_VERSION
+    !JUDOSHIAI_PROTOCOL_VERSIONES_SOPORTADAS.includes(
+      versionRecibida
+    )
   ) {
+    return;
+  }
+
+  if (
+    JUDOSHIAI_PROTOCOL_VERSION_CONFIGURADA &&
+    versionRecibida !==
+      JUDOSHIAI_PROTOCOL_VERSION_CONFIGURADA
+  ) {
+    return;
+  }
+
+  if (!judoshiaiProtocolVersion) {
+    judoshiaiProtocolVersion = versionRecibida;
+    console.log(
+      `✅ Protocolo JudoShiai detectado: ${judoshiaiProtocolVersion}`
+    );
+  }
+
+  if (versionRecibida !== judoshiaiProtocolVersion) {
     return;
   }
 
@@ -327,7 +374,7 @@ function solicitarDefinicion(id) {
 
   if (
     enviarMensaje([
-      JUDOSHIAI_PROTOCOL_VERSION,
+      judoshiaiProtocolVersion,
       10,
       0,
       7300,
@@ -431,6 +478,19 @@ async function obtenerProgramacionTatami(
   tatami,
   datosWebSocket
 ) {
+  const operacionHttp =
+    judoshiaiProtocolVersion === 7
+      ? "matches_all"
+      : judoshiaiProtocolVersion === 5
+        ? "matches"
+        : null;
+
+  if (!operacionHttp) {
+    return convertirProgramacion516(
+      datosWebSocket
+    );
+  }
+
   try {
     const respuesta = await fetch(
       JUDOSHIAI_HTTP_URL,
@@ -440,7 +500,7 @@ async function obtenerProgramacionTatami(
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          op: "matches_all",
+          op: operacionHttp,
           pw: "",
           tatami,
         }),
@@ -457,7 +517,7 @@ async function obtenerProgramacionTatami(
 
     if (!Array.isArray(lista)) {
       throw new Error(
-        "matches_all no devolvio un array"
+        operacionHttp + " no devolvio un array"
       );
     }
 
@@ -514,7 +574,7 @@ async function obtenerProgramacionTatami(
     };
   } catch (error) {
     console.log(
-      "matches_all no disponible en Tatami " +
+      operacionHttp + " no disponible en Tatami " +
         tatami +
         "; usando WebSocket normal."
     );

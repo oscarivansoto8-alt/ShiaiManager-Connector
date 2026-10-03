@@ -2,6 +2,7 @@ require("dotenv").config();
 
 const WebSocket = require("ws");
 const readline = require("readline");
+const { simularPropuestaOrden } = require("./orden-propuesta");
 const { createClient } = require("@supabase/supabase-js");
 
 const JUDOSHIAI_URL =
@@ -24,6 +25,10 @@ const JUDOSHIAI_PROTOCOL_VERSIONES_SOPORTADAS =
 const JUDOSHIAI_HTTP_URL =
   process.env.JUDOSHIAI_HTTP_URL ||
   "http://127.0.0.1:8088/json";
+
+const JUDOSHIAI_SHI_PATH = String(
+  process.env.JUDOSHIAI_SHI_PATH || ""
+).trim();
 
 const MODO_PRUEBA_SEGURO =
   process.env.MODO_PRUEBA_SEGURO === "1";
@@ -110,6 +115,7 @@ function conectarConJudoShiai() {
     console.log("Comandos disponibles:");
     console.log("N + Enter = comenzar un torneo nuevo");
     console.log("L + Enter = limpiar combates");
+    console.log("P tatami actual destino = simular nuevo orden");
     console.log("");
 
     solicitarInformacionCompleta();
@@ -891,6 +897,78 @@ function configurarComandosDeTerminal() {
       return;
     }
 
+    if (comando.startsWith("p ")) {
+      const partes = comando
+        .split(/\s+/)
+        .filter(Boolean);
+
+      if (partes.length !== 4) {
+        console.log("");
+        console.log(
+          "Uso: P <tatami> <posicion actual> <posicion destino>"
+        );
+        console.log("Ejemplo: P 2 5 6");
+        console.log("");
+        return;
+      }
+
+      const tatami = Number(partes[1]);
+      const posicionActual = Number(partes[2]);
+      const posicionDestino = Number(partes[3]);
+
+      try {
+        const cambios =
+          await simularPropuestaOrden({
+            tatami,
+            posicionActual,
+            posicionDestino,
+            protocolVersion:
+              judoshiaiProtocolVersion,
+            httpUrl:
+              JUDOSHIAI_HTTP_URL,
+            shiPath:
+              JUDOSHIAI_SHI_PATH,
+          });
+
+        console.log("");
+        console.log(
+          "=========================================="
+        );
+        console.log(
+          "       SIMULACION DE NUEVO ORDEN"
+        );
+        console.log(
+          "=========================================="
+        );
+        console.log(
+          `Tatami: ${tatami}`
+        );
+        console.log(
+          `Movimiento solicitado: ` +
+            `#${posicionActual} -> #${posicionDestino}`
+        );
+        console.log("");
+        console.table(cambios);
+        console.log("");
+        console.log("🧪 SOLO SIMULACION");
+        console.log(
+          "No se modifico JudoShiai, el .shi ni Supabase."
+        );
+        console.log(
+          "=========================================="
+        );
+        console.log("");
+      } catch (error) {
+        console.error("");
+        console.error(
+          "❌ No se pudo simular la propuesta:"
+        );
+        console.error(error.message);
+        console.error("");
+      }
+
+      return;
+    }
     if (comando === "l" || comando === "limpiar") {
       try {
         await limpiarTodosLosCombates();
@@ -917,7 +995,7 @@ function configurarComandosDeTerminal() {
       console.log("");
       console.log("Comando desconocido.");
       console.log(
-        "Usa N para torneo nuevo o L para limpiar."
+        "Usa N, L o P <tatami> <actual> <destino>."
       );
       console.log("");
     }

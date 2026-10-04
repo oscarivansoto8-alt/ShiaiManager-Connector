@@ -275,6 +275,10 @@ async function simularPropuestaOrden({
           rowid_match:
             fila.rowid_match,
 
+          category_id: Number(
+            combate?.category_id || 0
+          ),
+
           categoria:
             fila.categoria,
 

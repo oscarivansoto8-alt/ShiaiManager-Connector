@@ -41,6 +41,10 @@ const PERMITIR_APLICAR_ORDEN_PRUEBA =
   process.env.PERMITIR_APLICAR_ORDEN_PRUEBA ===
   "1";
 
+const PERMITIR_REORDEN_WEB_PRUEBA =
+  process.env.PERMITIR_REORDEN_WEB_PRUEBA ===
+  "1";
+
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error("❌ Faltan las variables de Supabase en el archivo .env");
   console.error("");
@@ -1001,16 +1005,21 @@ async function actualizarEstadoOrdenWeb(
   orden,
   estado,
   mensaje,
-  finalizada = false
+  finalizada = false,
+  estadoEsperado = "pendiente",
+  incrementarIntento = true
 ) {
   const cambios = {
     estado,
     mensaje,
     actualizado_en:
       new Date().toISOString(),
-    intentos:
-      Number(orden.intentos || 0) + 1,
   };
+
+  if (incrementarIntento) {
+    cambios.intentos =
+      Number(orden.intentos || 0) + 1;
+  }
 
   if (finalizada) {
     cambios.procesada_en =
@@ -1021,7 +1030,7 @@ async function actualizarEstadoOrdenWeb(
     .from("ordenes_judoshiai")
     .update(cambios)
     .eq("id", orden.id)
-    .eq("estado", "pendiente")
+    .eq("estado", estadoEsperado)
     .select("id, estado")
     .maybeSingle();
 
@@ -1135,6 +1144,170 @@ async function validarOrdenWebContraJudoShiai(
   };
 }
 
+function esArchivoPruebaOrden() {
+  return JUDOSHIAI_SHI_PATH
+    .replace(/\\/g, "/")
+    .toLowerCase()
+    .endsWith("/prueba-simulador-orden.shi");
+}
+
+async function obtenerColaCustom(tatami) {
+  const respuesta = await fetch(
+    JUDOSHIAI_HTTP_URL,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        op: "matches_all",
+        pw: "",
+        tatami,
+      }),
+    }
+  );
+
+  if (!respuesta.ok) {
+    throw new Error(
+      "matches_all respondio HTTP " +
+        respuesta.status
+    );
+  }
+
+  const lista = await respuesta.json();
+
+  if (!Array.isArray(lista)) {
+    throw new Error(
+      "matches_all no devolvio un array."
+    );
+  }
+
+  return lista;
+}
+
+async function aplicarOrdenWebViaJudoShiai(
+  orden,
+  validacion
+) {
+  if (!PERMITIR_REORDEN_WEB_PRUEBA) {
+    throw new Error(
+      "PERMITIR_REORDEN_WEB_PRUEBA no esta activado."
+    );
+  }
+
+  if (judoshiaiProtocolVersion !== 7) {
+    throw new Error(
+      "El reordenamiento en vivo requiere JudoShiai Custom protocolo 7."
+    );
+  }
+
+  if (!esArchivoPruebaOrden()) {
+    throw new Error(
+      "SEGURIDAD: por ahora solo se permite prueba-simulador-orden.shi."
+    );
+  }
+
+  const principal =
+    validacion.cambioPrincipal;
+
+  const categoryId = Number(
+    principal.category_id || 0
+  );
+
+  const numeroCombate = Number(
+    principal.combate || 0
+  );
+
+  if (
+    !Number.isInteger(categoryId) ||
+    categoryId <= 0
+  ) {
+    throw new Error(
+      "matches_all no entrego un category_id valido."
+    );
+  }
+
+  if (
+    !Number.isInteger(numeroCombate) ||
+    numeroCombate <= 0
+  ) {
+    throw new Error(
+      "Numero de combate invalido."
+    );
+  }
+
+  const respuesta = await fetch(
+    JUDOSHIAI_HTTP_URL,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        op: "reorder_matches",
+        pw: "",
+        tatami: Number(orden.tatami),
+        from_position:
+          Number(orden.posicion_actual),
+        to_position:
+          Number(orden.posicion_destino),
+        expected_category_id:
+          categoryId,
+        expected_number:
+          numeroCombate,
+      }),
+    }
+  );
+
+  if (!respuesta.ok) {
+    throw new Error(
+      "reorder_matches respondio HTTP " +
+        respuesta.status
+    );
+  }
+
+  const resultado =
+    await respuesta.json();
+
+  if (!resultado || resultado.ok !== true) {
+    throw new Error(
+      "JudoShiai no confirmo el reordenamiento."
+    );
+  }
+
+  const cola =
+    await obtenerColaCustom(
+      Number(orden.tatami)
+    );
+
+  const destino =
+    cola[
+      Number(orden.posicion_destino) - 1
+    ];
+
+  if (!destino) {
+    throw new Error(
+      "No existe la posicion destino despues del cambio."
+    );
+  }
+
+  if (
+    Number(destino.category_id) !==
+      categoryId ||
+    Number(destino.number) !==
+      numeroCombate
+  ) {
+    throw new Error(
+      "La verificacion posterior del orden fallo."
+    );
+  }
+
+  return {
+    categoryId,
+    numeroCombate,
+    resultado,
+  };
+}
 async function revisarOrdenesPendientes() {
   if (
     cerrandoPrograma ||
@@ -1232,11 +1405,44 @@ async function revisarOrdenesPendientes() {
         continue;
       }
 
+      if (!PERMITIR_REORDEN_WEB_PRUEBA) {
+        ordenesWebDetectadas.add(id);
+
+        console.log("");
+        console.log(
+          "=========================================="
+        );
+        console.log(
+          "       ORDEN WEB VALIDADA"
+        );
+        console.log(
+          "=========================================="
+        );
+        console.log(
+          "ID: " + orden.id
+        );
+        console.log(
+          "✅ Coincide con JudoShiai."
+        );
+        console.log(
+          "🔒 Aplicacion automatica desactivada."
+        );
+        console.log(
+          "La orden permanece pendiente."
+        );
+        console.log(
+          "=========================================="
+        );
+        console.log("");
+
+        continue;
+      }
+
       const actualizada =
         await actualizarEstadoOrdenWeb(
           orden,
           "procesando",
-          "Validada por Connector. Pendiente de aplicacion.",
+          "Validada por Connector. Aplicando en JudoShiai.",
           false
         );
 
@@ -1251,7 +1457,7 @@ async function revisarOrdenesPendientes() {
         "=========================================="
       );
       console.log(
-        "       ORDEN WEB VALIDADA"
+        "       APLICANDO ORDEN WEB"
       );
       console.log(
         "=========================================="
@@ -1268,20 +1474,75 @@ async function revisarOrdenesPendientes() {
           " -> #" +
           orden.posicion_destino
       );
-      console.log("");
-      console.table(
-        validacion.cambios
-      );
-      console.log("");
-      console.log(
-        "✅ La orden coincide con JudoShiai."
-      );
-      console.log(
-        "🧪 TODAVIA NO SE APLICO EL CAMBIO."
-      );
-      console.log(
-        "Estado Supabase: procesando"
-      );
+
+      try {
+        const aplicada =
+          await aplicarOrdenWebViaJudoShiai(
+            orden,
+            validacion
+          );
+
+        const finalizada =
+          await actualizarEstadoOrdenWeb(
+            orden,
+            "aplicada",
+            "Aplicada y verificada por Connector en JudoShiai.",
+            true,
+            "procesando",
+            false
+          );
+
+        if (!finalizada) {
+          throw new Error(
+            "El combate se movio, pero no se pudo cerrar la orden en Supabase."
+          );
+        }
+
+        console.log(
+          "✅ ORDEN APLICADA Y VERIFICADA"
+        );
+        console.log(
+          "Categoria ID: " +
+            aplicada.categoryId
+        );
+        console.log(
+          "Combate: " +
+            aplicada.numeroCombate
+        );
+        console.log(
+          "Estado Supabase: aplicada"
+        );
+
+        solicitarInformacionCompleta();
+      } catch (errorAplicacion) {
+        const mensajeAplicacion =
+          errorAplicacion instanceof Error
+            ? errorAplicacion.message
+            : String(errorAplicacion);
+
+        try {
+          await actualizarEstadoOrdenWeb(
+            orden,
+            "error",
+            "Error al aplicar en JudoShiai: " +
+              mensajeAplicacion,
+            true,
+            "procesando",
+            false
+          );
+        } catch (errorEstado) {
+          console.error(
+            "No se pudo registrar el estado error en Supabase: " +
+              errorEstado.message
+          );
+        }
+
+        console.error(
+          "❌ No se pudo aplicar la orden: " +
+            mensajeAplicacion
+        );
+      }
+
       console.log(
         "=========================================="
       );

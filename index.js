@@ -16,6 +16,7 @@ const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
 
 const TIEMPO_RECONEXION_MS = 3000;
 const TIEMPO_SINCRONIZACION_MS = 400;
+const TIEMPO_REVISION_ORDENES_MS = 2000;
 const REGISTROS_POR_MENSAJE_516 = 11;
 const VALORES_POR_REGISTRO_516 = 9;
 
@@ -84,8 +85,15 @@ let colaProcesamiento = Promise.resolve();
 
 let ultimaPropuestaSimulada = null;
 
+let temporizadorOrdenes = null;
+let consultaOrdenesEnCurso = false;
+let ultimoErrorDetectorOrdenes = "";
+
+const ordenesWebDetectadas = new Set();
+
 mostrarInicio();
 configurarComandosDeTerminal();
+iniciarDetectorOrdenes();
 conectarConJudoShiai();
 
 function mostrarInicio() {
@@ -881,6 +889,126 @@ async function prepararNuevoTorneo(
   }
 }
 
+function iniciarDetectorOrdenes() {
+  if (temporizadorOrdenes) {
+    return;
+  }
+
+  revisarOrdenesPendientes().catch(() => {});
+
+  temporizadorOrdenes = setInterval(
+    () => {
+      revisarOrdenesPendientes().catch(() => {});
+    },
+    TIEMPO_REVISION_ORDENES_MS
+  );
+}
+
+async function revisarOrdenesPendientes() {
+  if (
+    cerrandoPrograma ||
+    consultaOrdenesEnCurso
+  ) {
+    return;
+  }
+
+  consultaOrdenesEnCurso = true;
+
+  try {
+    const { data, error } = await supabase
+      .from("ordenes_judoshiai")
+      .select(
+        "id, created_at, tatami, posicion_actual, posicion_destino, categoria, combate_esperado, estado"
+      )
+      .eq("estado", "pendiente")
+      .order(
+        "created_at",
+        { ascending: true }
+      )
+      .limit(20);
+
+    if (error) {
+      throw new Error(error.message);
+    }
+
+    ultimoErrorDetectorOrdenes = "";
+
+    for (const orden of data ?? []) {
+      const id = String(orden.id);
+
+      if (ordenesWebDetectadas.has(id)) {
+        continue;
+      }
+
+      ordenesWebDetectadas.add(id);
+
+      console.log("");
+      console.log(
+        "=========================================="
+      );
+      console.log(
+        "       ORDEN WEB DETECTADA"
+      );
+      console.log(
+        "=========================================="
+      );
+      console.log(
+        `ID: ${orden.id}`
+      );
+      console.log(
+        `Tatami: ${orden.tatami}`
+      );
+      console.log(
+        `Movimiento: #${orden.posicion_actual} -> #${orden.posicion_destino}`
+      );
+      console.log(
+        `Categoria: ${orden.categoria || "Sin categoria"}`
+      );
+      console.log(
+        "Combate esperado:"
+      );
+      console.log(
+        JSON.stringify(
+          orden.combate_esperado,
+          null,
+          2
+        )
+      );
+      console.log("");
+      console.log(
+        "🧪 DETECCION SOLAMENTE"
+      );
+      console.log(
+        "NO se modifico JudoShiai, el .shi, Supabase ni la orden."
+      );
+      console.log(
+        "=========================================="
+      );
+      console.log("");
+    }
+  } catch (error) {
+    const mensaje =
+      error instanceof Error
+        ? error.message
+        : String(error);
+
+    if (
+      mensaje !==
+      ultimoErrorDetectorOrdenes
+    ) {
+      ultimoErrorDetectorOrdenes = mensaje;
+
+      console.error("");
+      console.error(
+        "❌ Detector de ordenes web:"
+      );
+      console.error(mensaje);
+      console.error("");
+    }
+  } finally {
+    consultaOrdenesEnCurso = false;
+  }
+}
 function configurarComandosDeTerminal() {
   const terminal = readline.createInterface({
     input: process.stdin,
@@ -1132,6 +1260,11 @@ function cerrarConector() {
   if (temporizadorSincronizacion) {
     clearTimeout(temporizadorSincronizacion);
     temporizadorSincronizacion = null;
+  }
+
+  if (temporizadorOrdenes) {
+    clearInterval(temporizadorOrdenes);
+    temporizadorOrdenes = null;
   }
 
   console.log("");

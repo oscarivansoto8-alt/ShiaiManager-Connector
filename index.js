@@ -30,6 +30,10 @@ const JUDOSHIAI_HTTP_URL =
   process.env.JUDOSHIAI_HTTP_URL ||
   "http://127.0.0.1:8088/json";
 
+const JUDOSHIAI_WEB_PASSWORD = String(
+  process.env.JUDOSHIAI_WEB_PASSWORD || ""
+);
+
 const JUDOSHIAI_SHI_PATH = String(
   process.env.JUDOSHIAI_SHI_PATH || ""
 ).trim();
@@ -220,7 +224,7 @@ function enviarMensaje(msg) {
 
   ws.send(
     JSON.stringify({
-      pw: "",
+      pw: JUDOSHIAI_WEB_PASSWORD,
       msg,
     })
   );
@@ -529,7 +533,7 @@ async function obtenerProgramacionTatami(
         },
         body: JSON.stringify({
           op: operacionHttp,
-          pw: "",
+          pw: JUDOSHIAI_WEB_PASSWORD,
           tatami,
         }),
       }
@@ -1161,7 +1165,7 @@ async function obtenerColaCustom(tatami) {
       },
       body: JSON.stringify({
         op: "matches_all",
-        pw: "",
+        pw: JUDOSHIAI_WEB_PASSWORD,
         tatami,
       }),
     }
@@ -1245,7 +1249,7 @@ async function aplicarOrdenWebViaJudoShiai(
       },
       body: JSON.stringify({
         op: "reorder_matches",
-        pw: "",
+        pw: JUDOSHIAI_WEB_PASSWORD,
         tatami: Number(orden.tatami),
         from_position:
           Number(orden.posicion_actual),

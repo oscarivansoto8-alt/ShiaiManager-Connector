@@ -2,7 +2,10 @@ require("dotenv").config();
 
 const WebSocket = require("ws");
 const readline = require("readline");
-const { simularPropuestaOrden } = require("./orden-propuesta");
+const {
+  simularPropuestaOrden,
+  aplicarPropuestaOrden,
+} = require("./orden-propuesta");
 const { createClient } = require("@supabase/supabase-js");
 
 const JUDOSHIAI_URL =
@@ -32,6 +35,10 @@ const JUDOSHIAI_SHI_PATH = String(
 
 const MODO_PRUEBA_SEGURO =
   process.env.MODO_PRUEBA_SEGURO === "1";
+
+const PERMITIR_APLICAR_ORDEN_PRUEBA =
+  process.env.PERMITIR_APLICAR_ORDEN_PRUEBA ===
+  "1";
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error("❌ Faltan las variables de Supabase en el archivo .env");
@@ -75,6 +82,8 @@ let sincronizacionPendiente = false;
 
 let colaProcesamiento = Promise.resolve();
 
+let ultimaPropuestaSimulada = null;
+
 mostrarInicio();
 configurarComandosDeTerminal();
 conectarConJudoShiai();
@@ -116,6 +125,7 @@ function conectarConJudoShiai() {
     console.log("N + Enter = comenzar un torneo nuevo");
     console.log("L + Enter = limpiar combates");
     console.log("P tatami actual destino = simular nuevo orden");
+    console.log("A CONFIRMAR = aplicar ultima simulacion de prueba");
     console.log("");
 
     solicitarInformacionCompleta();
@@ -930,6 +940,16 @@ function configurarComandosDeTerminal() {
               JUDOSHIAI_SHI_PATH,
           });
 
+        ultimaPropuestaSimulada = {
+          tatami,
+          posicionActual,
+          posicionDestino,
+          cambios,
+          shiPath:
+            JUDOSHIAI_SHI_PATH,
+          creadaEn: Date.now(),
+        };
+
         console.log("");
         console.log(
           "=========================================="
@@ -969,6 +989,73 @@ function configurarComandosDeTerminal() {
 
       return;
     }
+    if (comando === "a confirmar") {
+      if (!ultimaPropuestaSimulada) {
+        console.log("");
+        console.log(
+          "❌ No hay una propuesta simulada pendiente."
+        );
+        console.log(
+          "Primero usa P <tatami> <actual> <destino>."
+        );
+        console.log("");
+        return;
+      }
+
+      try {
+        const resultado =
+          await aplicarPropuestaOrden({
+            propuesta:
+              ultimaPropuestaSimulada,
+            shiPath:
+              JUDOSHIAI_SHI_PATH,
+            permitirEscritura:
+              PERMITIR_APLICAR_ORDEN_PRUEBA,
+          });
+
+        console.log("");
+        console.log(
+          "=========================================="
+        );
+        console.log(
+          "       ORDEN APLICADO EN PRUEBA"
+        );
+        console.log(
+          "=========================================="
+        );
+        console.log(
+          "✅ Transaccion completada."
+        );
+        console.log(
+          "✅ matches.number NO fue modificado."
+        );
+        console.log(
+          "✅ Backup automatico:"
+        );
+        console.log(
+          resultado.backupPath
+        );
+        console.log("");
+        console.table(
+          resultado.cambios
+        );
+        console.log(
+          "=========================================="
+        );
+        console.log("");
+
+        ultimaPropuestaSimulada = null;
+      } catch (error) {
+        console.error("");
+        console.error(
+          "❌ NO se aplico la propuesta:"
+        );
+        console.error(error.message);
+        console.error("");
+      }
+
+      return;
+    }
     if (comando === "l" || comando === "limpiar") {
       try {
         await limpiarTodosLosCombates();
@@ -995,7 +1082,7 @@ function configurarComandosDeTerminal() {
       console.log("");
       console.log("Comando desconocido.");
       console.log(
-        "Usa N, L o P <tatami> <actual> <destino>."
+        "Usa N, L, P <tatami> <actual> <destino> o A CONFIRMAR."
       );
       console.log("");
     }

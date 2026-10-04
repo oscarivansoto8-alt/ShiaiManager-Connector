@@ -904,6 +904,237 @@ function iniciarDetectorOrdenes() {
   );
 }
 
+function normalizarOrdenWeb(valor) {
+  return String(valor ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9ñ]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function validarCombateEsperado(
+  orden,
+  cambioPrincipal
+) {
+  const esperado =
+    orden.combate_esperado &&
+    typeof orden.combate_esperado === "object"
+      ? orden.combate_esperado
+      : {};
+
+  const categoriaOrden =
+    normalizarOrdenWeb(
+      orden.categoria
+    );
+
+  const categoriaReal =
+    normalizarOrdenWeb(
+      cambioPrincipal.categoria
+    );
+
+  if (
+    categoriaOrden &&
+    categoriaOrden !== categoriaReal
+  ) {
+    throw new Error(
+      "La categoria ya no coincide con JudoShiai."
+    );
+  }
+
+  const blancoEsperado =
+    normalizarOrdenWeb(
+      esperado.blanco
+    );
+
+  const azulEsperado =
+    normalizarOrdenWeb(
+      esperado.azul
+    );
+
+  const nombreEsperado =
+    normalizarOrdenWeb(
+      esperado.nombre
+    );
+
+  const blancoReal =
+    normalizarOrdenWeb(
+      cambioPrincipal.blanco
+    );
+
+  const azulReal =
+    normalizarOrdenWeb(
+      cambioPrincipal.azul
+    );
+
+  if (
+    blancoEsperado &&
+    blancoEsperado !== blancoReal
+  ) {
+    throw new Error(
+      "El competidor blanco ya no coincide con JudoShiai."
+    );
+  }
+
+  if (
+    azulEsperado &&
+    azulEsperado !== azulReal
+  ) {
+    throw new Error(
+      "El competidor azul ya no coincide con JudoShiai."
+    );
+  }
+
+  if (
+    nombreEsperado &&
+    nombreEsperado !== blancoReal &&
+    nombreEsperado !== azulReal
+  ) {
+    throw new Error(
+      "El deportista esperado ya no aparece en ese combate."
+    );
+  }
+}
+
+async function actualizarEstadoOrdenWeb(
+  orden,
+  estado,
+  mensaje,
+  finalizada = false
+) {
+  const cambios = {
+    estado,
+    mensaje,
+    actualizado_en:
+      new Date().toISOString(),
+    intentos:
+      Number(orden.intentos || 0) + 1,
+  };
+
+  if (finalizada) {
+    cambios.procesada_en =
+      new Date().toISOString();
+  }
+
+  const { data, error } = await supabase
+    .from("ordenes_judoshiai")
+    .update(cambios)
+    .eq("id", orden.id)
+    .eq("estado", "pendiente")
+    .select("id, estado")
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(
+      "No se pudo actualizar la orden " +
+        orden.id +
+        ": " +
+        error.message
+    );
+  }
+
+  return data;
+}
+
+async function validarOrdenWebContraJudoShiai(
+  orden
+) {
+  if (
+    !ws ||
+    ws.readyState !== WebSocket.OPEN ||
+    judoshiaiProtocolVersion !== 7
+  ) {
+    return {
+      esperando: true,
+      motivo:
+        "Esperando JudoShiai Custom protocolo 7.",
+    };
+  }
+
+  const tatami =
+    Number(orden.tatami);
+
+  const posicionActual =
+    Number(orden.posicion_actual);
+
+  const posicionDestino =
+    Number(orden.posicion_destino);
+
+  if (
+    !Number.isInteger(tatami) ||
+    tatami <= 0
+  ) {
+    throw new Error(
+      "Tatami invalido."
+    );
+  }
+
+  if (
+    !Number.isInteger(posicionActual) ||
+    posicionActual < 3
+  ) {
+    throw new Error(
+      "Seguridad: no se pueden mover las posiciones 1 o 2."
+    );
+  }
+
+  if (
+    !Number.isInteger(posicionDestino) ||
+    posicionDestino <= posicionActual
+  ) {
+    throw new Error(
+      "La posicion destino no es valida."
+    );
+  }
+
+  const cambios =
+    await simularPropuestaOrden({
+      tatami,
+      posicionActual,
+      posicionDestino,
+      protocolVersion:
+        judoshiaiProtocolVersion,
+      httpUrl:
+        JUDOSHIAI_HTTP_URL,
+      shiPath:
+        JUDOSHIAI_SHI_PATH,
+    });
+
+  if (
+    !Array.isArray(cambios) ||
+    cambios.length < 2
+  ) {
+    throw new Error(
+      "JudoShiai no devolvio un movimiento valido."
+    );
+  }
+
+  const cambioPrincipal =
+    cambios.find(
+      (cambio) =>
+        Number(cambio.posicion_actual) ===
+        posicionActual
+    );
+
+  if (!cambioPrincipal) {
+    throw new Error(
+      "No se encontro el combate que la web intenta mover."
+    );
+  }
+
+  validarCombateEsperado(
+    orden,
+    cambioPrincipal
+  );
+
+  return {
+    esperando: false,
+    cambios,
+    cambioPrincipal,
+  };
+}
+
 async function revisarOrdenesPendientes() {
   if (
     cerrandoPrograma ||
@@ -918,7 +1149,7 @@ async function revisarOrdenesPendientes() {
     const { data, error } = await supabase
       .from("ordenes_judoshiai")
       .select(
-        "id, created_at, tatami, posicion_actual, posicion_destino, categoria, combate_esperado, estado"
+        "id, created_at, tatami, posicion_actual, posicion_destino, categoria, combate_esperado, estado, intentos"
       )
       .eq("estado", "pendiente")
       .order(
@@ -936,7 +1167,80 @@ async function revisarOrdenesPendientes() {
     for (const orden of data ?? []) {
       const id = String(orden.id);
 
-      if (ordenesWebDetectadas.has(id)) {
+      if (
+        ordenesWebDetectadas.has(id)
+      ) {
+        continue;
+      }
+
+      let validacion;
+
+      try {
+        validacion =
+          await validarOrdenWebContraJudoShiai(
+            orden
+          );
+      } catch (errorValidacion) {
+        const mensaje =
+          errorValidacion instanceof Error
+            ? errorValidacion.message
+            : String(errorValidacion);
+
+        const actualizada =
+          await actualizarEstadoOrdenWeb(
+            orden,
+            "rechazada",
+            "Rechazada por Connector: " +
+              mensaje,
+            true
+          );
+
+        if (!actualizada) {
+          continue;
+        }
+
+        ordenesWebDetectadas.add(id);
+
+        console.log("");
+        console.log(
+          "=========================================="
+        );
+        console.log(
+          "       ORDEN WEB RECHAZADA"
+        );
+        console.log(
+          "=========================================="
+        );
+        console.log(
+          "ID: " + orden.id
+        );
+        console.log(
+          "Motivo: " + mensaje
+        );
+        console.log(
+          "NO se modifico JudoShiai ni el .shi."
+        );
+        console.log(
+          "=========================================="
+        );
+        console.log("");
+
+        continue;
+      }
+
+      if (validacion.esperando) {
+        continue;
+      }
+
+      const actualizada =
+        await actualizarEstadoOrdenWeb(
+          orden,
+          "procesando",
+          "Validada por Connector. Pendiente de aplicacion.",
+          false
+        );
+
+      if (!actualizada) {
         continue;
       }
 
@@ -947,39 +1251,36 @@ async function revisarOrdenesPendientes() {
         "=========================================="
       );
       console.log(
-        "       ORDEN WEB DETECTADA"
+        "       ORDEN WEB VALIDADA"
       );
       console.log(
         "=========================================="
       );
       console.log(
-        `ID: ${orden.id}`
+        "ID: " + orden.id
       );
       console.log(
-        `Tatami: ${orden.tatami}`
+        "Tatami: " + orden.tatami
       );
       console.log(
-        `Movimiento: #${orden.posicion_actual} -> #${orden.posicion_destino}`
+        "Movimiento: #" +
+          orden.posicion_actual +
+          " -> #" +
+          orden.posicion_destino
       );
-      console.log(
-        `Categoria: ${orden.categoria || "Sin categoria"}`
-      );
-      console.log(
-        "Combate esperado:"
-      );
-      console.log(
-        JSON.stringify(
-          orden.combate_esperado,
-          null,
-          2
-        )
+      console.log("");
+      console.table(
+        validacion.cambios
       );
       console.log("");
       console.log(
-        "🧪 DETECCION SOLAMENTE"
+        "✅ La orden coincide con JudoShiai."
       );
       console.log(
-        "NO se modifico JudoShiai, el .shi, Supabase ni la orden."
+        "🧪 TODAVIA NO SE APLICO EL CAMBIO."
+      );
+      console.log(
+        "Estado Supabase: procesando"
       );
       console.log(
         "=========================================="
@@ -996,7 +1297,8 @@ async function revisarOrdenesPendientes() {
       mensaje !==
       ultimoErrorDetectorOrdenes
     ) {
-      ultimoErrorDetectorOrdenes = mensaje;
+      ultimoErrorDetectorOrdenes =
+        mensaje;
 
       console.error("");
       console.error(
@@ -1009,6 +1311,8 @@ async function revisarOrdenesPendientes() {
     consultaOrdenesEnCurso = false;
   }
 }
+
+
 function configurarComandosDeTerminal() {
   const terminal = readline.createInterface({
     input: process.stdin,

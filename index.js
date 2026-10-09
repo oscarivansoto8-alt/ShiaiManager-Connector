@@ -34,6 +34,10 @@ const JUDOSHIAI_WEB_PASSWORD = String(
   process.env.JUDOSHIAI_WEB_PASSWORD || ""
 );
 
+const JUDOSHIAI_REORDER_TOKEN = String(
+  process.env.JUDOSHIAI_REORDER_TOKEN || ""
+);
+
 const JUDOSHIAI_SHI_PATH = String(
   process.env.JUDOSHIAI_SHI_PATH || ""
 ).trim();
@@ -1199,6 +1203,12 @@ async function aplicarOrdenWebViaJudoShiai(
     );
   }
 
+  if (!JUDOSHIAI_REORDER_TOKEN) {
+    throw new Error(
+      "Falta JUDOSHIAI_REORDER_TOKEN."
+    );
+  }
+
   if (judoshiaiProtocolVersion !== 7) {
     throw new Error(
       "El reordenamiento en vivo requiere JudoShiai Custom protocolo 7."
@@ -1250,6 +1260,8 @@ async function aplicarOrdenWebViaJudoShiai(
       body: JSON.stringify({
         op: "reorder_matches",
         pw: JUDOSHIAI_WEB_PASSWORD,
+        reorder_token:
+          JUDOSHIAI_REORDER_TOKEN,
         tatami: Number(orden.tatami),
         from_position:
           Number(orden.posicion_actual),
